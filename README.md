@@ -23,6 +23,7 @@ pricing, and every model is open. Point an existing ElevenLabs integration (offi
 |---|---|---|---|
 | 🗣️ | **Text to Speech** | 600+ languages including **Bengali**, French, Hindi, Arabic and Chinese; long texts (50k chars); streaming; character timestamps; speed / stability / similarity controls; MP3, WAV, PCM, Opus, FLAC, μ-law output; non-verbal tags such as `[laughter]` and `[sigh]` | [OmniVoice](https://github.com/k2-fsa/OmniVoice) |
 | 🧬 | **Instant Voice Cloning** | Clone any voice from 3–30 s of audio (upload or record in the browser), with optional background-noise removal and automatic transcription of the reference | OmniVoice |
+| 🎭 | **Emotion tags** | Write `[angry]`, `[sad]`, `[whisper]`, `[surprised]`… (17 emotions, 85+ aliases; ElevenLabs-style tags like `[shouting, urgent]` work as-is). Each voice holds one clip per emotion, and missing emotions fall back to a related one. Import whole emotion packs from a .zip | OmniVoice (emotion-aware cloning) |
 | ✨ | **Voice Design** | Create a new voice from attributes (gender, age, pitch, accent, whisper), get 3 previews, keep the one you like | OmniVoice |
 | 📚 | **Voice Library** | 10 premade voices, plus your cloned and designed voices, searchable, with labels, previews and editing | |
 | ✍️ | **Speech to Text** | 99 languages, word-level timestamps, speaker diarization, export to TXT / SRT / VTT / JSON | [faster-whisper](https://github.com/SYSTRAN/faster-whisper) (+ [pyannote](https://github.com/pyannote/pyannote-audio)) |
@@ -108,6 +109,22 @@ const client = new ElevenLabsClient({ apiKey: "kt_...", baseUrl: "http://localho
 The full endpoint list is in [docs/API.md](docs/API.md), and interactive docs are at `http://localhost:8000/docs`.
 
 Model ids: `kontho_v1` (quality) and `kontho_turbo` (about 2× faster). ElevenLabs ids are accepted too: `eleven_flash_*` and `eleven_turbo_*` map to turbo, everything else to v1.
+
+## Emotions
+
+The voice model copies **timbre, accent and emotion** from its reference clip. So instead of guessing emotions
+from words, Kontho stores a reference clip per emotion for each voice and switches between them as it reads the tags:
+
+```text
+[calm] সেদিন সকালটা ছিল অন্য দিনের মতোই শান্ত। [tense] কিন্তু দুপুর গড়াতেই আকাশ কালো হয়ে এলো।
+[shouting] ভয় পাইয়েন না! আমি আইতাছি! [calm] সব ঠিক হইয়া যাইব।
+```
+
+- **Emotions:** neutral, calm, warm, happy, excited, sad, crying, worried, tense, scared, angry, shouting, surprised, mysterious, pleading, laughing, whisper. Aliases include annoyed→angry, sobbing→crying, panicked→scared and hopeful→happy (`GET /v1/emotions` lists them all).
+- **Tag rules:** a tag applies until the next one, and `[neutral]` returns to the normal voice. In multi-word tags the last recognised emotion wins. `[pause]` becomes a pause, and sound tags (`[laughter]`, `[sigh]`…) are kept.
+- **Fallbacks:** a voice with no `shouting` clip uses `angry`, then `scared`, then its normal voice. The response header `emotions-used` shows what was used, e.g. `shouting=angry,crying=sad`.
+- **Adding clips:** in the studio (Voices → Edit → Emotions), or with `POST /v1/voices/{id}/emotions`. A whole cast at once: a zip of `voice_emotion.mp3` files + `transcripts.txt` via **Import emotion pack** (`POST /v1/voices/import-pack`). Good sources are your own recordings, or lines from a TTS service you already paid for.
+- Use 5–10 s of clean speech per clip, clearly in that emotion, from the same speaker. Clone only voices you have permission to use.
 
 ## Configuration
 

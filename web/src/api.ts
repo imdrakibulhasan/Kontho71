@@ -9,7 +9,10 @@ export type Voice = {
   language: string;
   preview_url: string;
   created_at_unix: number;
+  emotions: string[];
 };
+
+export type EmotionInfo = { emotion: string; name: string; name_bn: string; aliases: string[] };
 
 export type VoiceSettings = { stability: number; similarity_boost: number; style: number; speed: number };
 export type Language = { language_id: string; name: string; native_name: string };
@@ -104,11 +107,11 @@ export async function sendJSON<T>(path: string, body: unknown, method = "POST"):
   return (await check(res)).json();
 }
 
-export async function postJSONForBlob(path: string, body: unknown): Promise<{ blob: Blob; historyId: string | null }> {
+export async function postJSONForBlob(path: string, body: unknown): Promise<{ blob: Blob; historyId: string | null; emotions: string | null }> {
   const res = await check(
     await fetch(path, { method: "POST", headers: headers({ "Content-Type": "application/json" }), body: JSON.stringify(body) }),
   );
-  return { blob: await res.blob(), historyId: res.headers.get("history-item-id") };
+  return { blob: await res.blob(), historyId: res.headers.get("history-item-id"), emotions: res.headers.get("emotions-used") };
 }
 
 export async function postForm<T>(path: string, form: FormData): Promise<T> {
@@ -137,6 +140,7 @@ export async function mediaUrl(path: string): Promise<string> {
 
 export const api = {
   voices: () => getJSON<{ voices: Voice[] }>("/v1/voices").then((r) => r.voices),
+  emotions: () => getJSON<{ emotions: EmotionInfo[] }>("/v1/emotions").then((r) => r.emotions),
   languages: () => getJSON<{ languages: Language[] }>("/v1/languages").then((r) => r.languages),
   status: () => getJSON<{ version: string; device: string; ffmpeg: boolean; engines: Record<string, { engine: string; loaded: boolean; available: string[] }> }>("/v1/system/status"),
 };

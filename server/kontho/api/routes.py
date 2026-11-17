@@ -15,6 +15,7 @@ from pydantic import BaseModel, Field
 from .. import __version__, db
 from .. import audio as A
 from .. import engines as E
+from .. import emotions as EM
 from ..languages import language_list
 from ..services import changer, dubbing, sfx, stt
 from ..services import tts as T
@@ -33,14 +34,19 @@ class TTSRequest(BaseModel):
     seed: int | None = None
     previous_text: str | None = None
     next_text: str | None = None
+    emotion: str | None = None  # default emotion for text before the first [emotion] tag
 
 
 @router.post("/v1/text-to-speech/{voice_id}", tags=["Text to speech"])
 def text_to_speech(voice_id: str, body: TTSRequest, output_format: str = Query("mp3_44100_128")):
+    report: list = []
     with errors():
         audio, sr, _, hid = T.synthesize(body.text, voice_id, body.voice_settings, body.language_code,
-                                         body.model_id, body.seed)
-    return audio_response(audio, sr, output_format, hid, "speech")
+                                         body.model_id, body.seed, emotion=body.emotion, report=report)
+    resp = audio_response(audio, sr, output_format, hid, "speech")
+    if report:
+        resp.headers["emotions-used"] = T.emotion_header(report)
+    return resp
 
 
 @router.post("/v1/text-to-speech/{voice_id}/stream", tags=["Text to speech"])
@@ -49,7 +55,7 @@ def text_to_speech_stream(voice_id: str, body: TTSRequest, output_format: str = 
         T.resolve_voice(voice_id)
         fmt = A.parse_output_format(output_format)
     gen = T.stream(body.text, voice_id, body.voice_settings, body.language_code, body.model_id, body.seed,
-                   output_format)
+                   output_format, body.emotion)
     media = "audio/pcm" if fmt.codec == "wav" else fmt.content_type
     return StreamingResponse(gen, media_type=media)
 
@@ -58,7 +64,7 @@ def text_to_speech_stream(voice_id: str, body: TTSRequest, output_format: str = 
 def text_to_speech_timestamps(voice_id: str, body: TTSRequest, output_format: str = Query("mp3_44100_128")):
     with errors():
         return T.with_timestamps(body.text, voice_id, body.voice_settings, body.language_code, body.model_id,
-                                 body.seed, output_format)
+                                 body.seed, output_format, body.emotion)
 
 
 # =============================================================== voices
@@ -125,6 +131,70 @@ def delete_voice(voice_id: str):
     if not V.delete_voice(voice_id):
         raise HTTPException(404, {"status": "voice_not_found", "message": "Voice not found or not deletable"})
     return {"status": "ok"}
+
+
+# =============================================================== emotions
+@router.get("/v1/emotions", tags=["Emotions"])
+def emotion_catalog():
+    """Emotion tags understood in text (``[angry] ...``), with accepted aliases."""
+    return {"emotions": EM.catalog()}
+
+
+@router.get("/v1/voices/{voice_id}/emotions", tags=["Emotions"])
+def voice_emotions(voice_id: str):
+    if not V.get_voice(voice_id):
+        raise HTTPException(404, {"status": "voice_not_found", "message": "Voice not found"})
+    return {"emotions": [{"emotion": e, "reference_text": r["ref_text"],
+                          "audio_url": f"/v1/voices/{voice_id}/emotions/{e}/audio"}
+                         for e, r in V.list_emotions(voice_id).items()]}
+
+
+@router.post("/v1/voices/{voice_id}/emotions", tags=["Emotions"])
+def add_voice_emotion(voice_id: str, emotion: str = Form(...), files: list[UploadFile] = File(...),
+                      reference_text: str | None = Form(None), remove_background_noise: bool = Form(False),
+                      language: str | None = Form(None)):
+    paths = save_uploads(files, db.new_id("emo_"))
+    with errors():
+        row = V.set_emotion(voice_id, emotion, paths, reference_text, remove_background_noise, language)
+    return {"emotion": row["emotion"], "reference_text": row["ref_text"]}
+
+
+@router.get("/v1/voices/{voice_id}/emotions/{emotion}/audio", tags=["Emotions"])
+def voice_emotion_audio(voice_id: str, emotion: str):
+    clip = V.list_emotions(voice_id).get(emotion)
+    if not clip:
+        raise HTTPException(404, {"status": "not_found", "message": "No clip for this emotion"})
+    return FileResponse(clip["ref_audio"], media_type="audio/wav")
+
+
+@router.delete("/v1/voices/{voice_id}/emotions/{emotion}", tags=["Emotions"])
+def delete_voice_emotion(voice_id: str, emotion: str):
+    if not V.delete_emotion(voice_id, emotion):
+        raise HTTPException(404, {"status": "not_found", "message": "No clip for this emotion"})
+    return {"status": "ok"}
+
+
+@router.post("/v1/voices/import-pack", tags=["Emotions"])
+def import_emotion_pack(file: UploadFile = File(...), language: str = Form("")):
+    """Import a .zip of ``<voice>_<emotion>.mp3`` clips (+ optional transcripts.txt, one
+    ``file<TAB>exact words`` per line). Each voice is created (or updated) with its emotions."""
+    import tempfile
+    import zipfile
+
+    (path,) = save_uploads([file], db.new_id("pack_"))
+    with tempfile.TemporaryDirectory() as tmp, errors():
+        try:
+            with zipfile.ZipFile(path) as z:
+                for member in z.infolist():
+                    target = (Path(tmp) / member.filename).resolve()
+                    if Path(tmp).resolve() not in target.parents or member.is_dir():
+                        continue  # skip directories and unsafe paths
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    target.write_bytes(z.read(member))
+        except zipfile.BadZipFile as exc:
+            raise ValueError("The file is not a valid .zip") from exc
+        result = V.import_pack(Path(tmp), language)
+    return {"voices": result}
 
 
 class DesignRequest(BaseModel):

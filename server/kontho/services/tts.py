@@ -10,6 +10,7 @@ import numpy as np
 
 from .. import audio as A
 from .. import db, storage
+from .. import emotions as E
 from ..engines import get_engine
 from ..engines.base import SynthesisOptions
 from ..text import apply_pronunciations, chunk_text
@@ -74,18 +75,37 @@ def resolve_voice(voice_id: str) -> dict[str, Any]:
 
 
 def iter_chunks(text: str, voice: dict[str, Any], settings: VoiceSettings, language: str | None,
-                model_id: str | None, seed: int | None) -> Iterator[tuple[str, np.ndarray, int]]:
+                model_id: str | None, seed: int | None, emotion: str | None = None,
+                report: list | None = None) -> Iterator[tuple[str, np.ndarray, int]]:
+    """Synthesize ``text`` chunk by chunk. Emotion tags (``[angry] ...``) switch the voice's
+    reference clip for the text that follows; ``report`` collects (requested, used) emotions."""
     text = apply_pronunciations(text, _pronunciation_rules(language))
     engine = get_engine("tts")
-    spec = V.voice_spec(voice)
-    for i, chunk in enumerate(chunk_text(text)):
-        audio, sr = engine.synthesize(chunk, spec, make_options(settings, spec.seed, language, model_id, seed, i))
-        yield chunk, audio, sr
+    default = E.canonical(emotion) if emotion else None
+    i = 0
+    for emo, run in E.parse(text, default):
+        spec, used = V.emotion_spec(voice, emo)
+        if report is not None and emo:
+            report.append((emo, used))
+        for chunk in chunk_text(run):
+            audio, sr = engine.synthesize(chunk, spec, make_options(settings, spec.seed, language, model_id, seed, i))
+            i += 1
+            yield chunk, audio, sr
+
+
+def emotion_header(report: list) -> str:
+    seen = []
+    for req, used in report:
+        item = f"{req}={used or 'base'}"
+        if item not in seen:
+            seen.append(item)
+    return ",".join(seen)
 
 
 def synthesize(text: str, voice_id: str, settings: dict | None = None, language: str | None = None,
-               model_id: str | None = None, seed: int | None = None,
-               save: bool = True) -> tuple[np.ndarray, int, list[tuple[str, float, float]], str | None]:
+               model_id: str | None = None, seed: int | None = None, save: bool = True,
+               emotion: str | None = None,
+               report: list | None = None) -> tuple[np.ndarray, int, list[tuple[str, float, float]], str | None]:
     """Return (audio, sr, [(chunk_text, start, end)], history_id)."""
     if not text.strip():
         raise ValueError("text is empty")
@@ -95,7 +115,8 @@ def synthesize(text: str, voice_id: str, settings: dict | None = None, language:
     vs = VoiceSettings.from_dict(settings)
     parts, spans, sr, t = [], [], 24000, 0.0
     gap = 0.18
-    for chunk, audio, sr in iter_chunks(text, voice, vs, language, model_id, seed):
+    report = report if report is not None else []
+    for chunk, audio, sr in iter_chunks(text, voice, vs, language, model_id, seed, emotion, report):
         parts.append(audio)
         spans.append((chunk, t, t + audio.size / sr))
         t += audio.size / sr + gap
@@ -104,7 +125,7 @@ def synthesize(text: str, voice_id: str, settings: dict | None = None, language:
     if save:
         hid = save_history("tts", out, sr, text=text, voice=voice,
                            settings={"voice_settings": vs.__dict__, "model_id": model_id, "language": language,
-                                     "seed": seed})
+                                     "seed": seed, "emotions": emotion_header(report)})
     return out, sr, spans, hid
 
 
@@ -120,13 +141,13 @@ def save_history(kind: str, audio: np.ndarray, sr: int, text: str = "", voice: d
 
 
 def stream(text: str, voice_id: str, settings: dict | None, language: str | None, model_id: str | None,
-           seed: int | None, output_format: str) -> Iterator[bytes]:
+           seed: int | None, output_format: str, emotion: str | None = None) -> Iterator[bytes]:
     """Stream encoded audio chunk by chunk (sentence-level streaming)."""
     voice = resolve_voice(voice_id)
     vs = VoiceSettings.from_dict(settings)
     fmt = A.parse_output_format(output_format)
     collected, sr = [], 24000
-    for _, audio, sr in iter_chunks(text, voice, vs, language, model_id, seed):
+    for _, audio, sr in iter_chunks(text, voice, vs, language, model_id, seed, emotion):
         piece = A.concat([audio, A.silence(0.18, sr)], sr)
         collected.append(piece)
         if fmt.codec == "wav":  # a WAV header can't be streamed per chunk -> send raw PCM after a header
@@ -155,8 +176,8 @@ def alignment(spans: list[tuple[str, float, float]]) -> dict[str, list]:
 
 
 def with_timestamps(text: str, voice_id: str, settings: dict | None, language: str | None, model_id: str | None,
-                    seed: int | None, output_format: str) -> dict[str, Any]:
-    audio, sr, spans, _ = synthesize(text, voice_id, settings, language, model_id, seed)
+                    seed: int | None, output_format: str, emotion: str | None = None) -> dict[str, Any]:
+    audio, sr, spans, _ = synthesize(text, voice_id, settings, language, model_id, seed, emotion=emotion)
     al = alignment(spans)
     return {"audio_base64": base64.b64encode(A.encode(audio, sr, output_format)).decode(),
             "alignment": al, "normalized_alignment": al}

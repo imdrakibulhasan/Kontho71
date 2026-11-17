@@ -12,7 +12,7 @@ Endpoints marked ★ are Kontho extensions; all others mirror the ElevenLabs API
 ## Text to speech
 | Method | Path | Notes |
 |---|---|---|
-| POST | `/v1/text-to-speech/{voice_id}` | JSON `{text, model_id, language_code, voice_settings{stability, similarity_boost, speed}, seed}`; query `output_format` (e.g. `mp3_44100_128`, `wav_24000`, `pcm_16000`, `opus_48000_64`, `flac_44100`, `ulaw_8000`). Response audio has the `history-item-id` header |
+| POST | `/v1/text-to-speech/{voice_id}` | JSON `{text, model_id, language_code, voice_settings{stability, similarity_boost, speed}, seed, emotion ★}`; query `output_format` (e.g. `mp3_44100_128`, `wav_24000`, `pcm_16000`, `opus_48000_64`, `flac_44100`, `ulaw_8000`). Response audio has the `history-item-id` header |
 | POST | `/v1/text-to-speech/{voice_id}/stream` | Chunked audio, sentence by sentence |
 | POST | `/v1/text-to-speech/{voice_id}/with-timestamps` | `{audio_base64, alignment{characters, character_start_times_seconds, character_end_times_seconds}}` (timings are approximate per character) |
 
@@ -26,6 +26,18 @@ Endpoints marked ★ are Kontho extensions; all others mirror the ElevenLabs API
 | POST | `/v1/voices/{voice_id}/edit` | multipart: `name`, `description`, `labels`, `reference_text` |
 | DELETE | `/v1/voices/{voice_id}` | Premade voices cannot be deleted |
 | GET | `/v1/voices/settings/default` | |
+
+## Emotions ★
+| Method | Path | Notes |
+|---|---|---|
+| GET | `/v1/emotions` | Emotion vocabulary with Bengali names and aliases |
+| GET | `/v1/voices/{voice_id}/emotions` | The voice's emotion clips |
+| POST | `/v1/voices/{voice_id}/emotions` | multipart: `emotion`, `files[]`, `reference_text`, `remove_background_noise`, `language`. Replaces an existing clip for that emotion |
+| GET | `/v1/voices/{voice_id}/emotions/{emotion}/audio` | The clip (WAV) |
+| DELETE | `/v1/voices/{voice_id}/emotions/{emotion}` | |
+| POST | `/v1/voices/import-pack` | multipart `file` (.zip of `voice_emotion.mp3` + optional `transcripts.txt`), `language`. Creates or updates one voice per prefix |
+
+In text-to-speech, write `[emotion]` tags in `text` (or set `"emotion"` in the body as the default). The `emotions-used` response header reports `requested=used` pairs.
 
 ## Voice design
 | Method | Path | Notes |

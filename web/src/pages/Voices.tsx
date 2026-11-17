@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { del, getJSON, postForm, sendJSON, Voice } from "../api";
-import { refreshVoices, useObjectUrls, useVoices } from "../hooks";
+import { refreshVoices, useEmotionCatalog, useObjectUrls, useVoices } from "../hooks";
 import { AudioPlayer, Empty, ErrorBox, FileDrop, LanguageSelect, Modal, PageHeader, Recorder, Spinner } from "../components/ui";
 import { PreviewButton, VoiceAvatar } from "../components/VoicePicker";
 
@@ -10,7 +10,7 @@ export default function Voices() {
   const { voices, loading, error } = useVoices();
   const [tab, setTab] = useState<(typeof TABS)[number]>("all");
   const [q, setQ] = useState("");
-  const [modal, setModal] = useState<"clone" | "design" | null>(null);
+  const [modal, setModal] = useState<"clone" | "design" | "pack" | null>(null);
   const [editing, setEditing] = useState<Voice | null>(null);
   const shown = useMemo(
     () => voices.filter((v) => (tab === "all" || v.category === tab) && v.name.toLowerCase().includes(q.toLowerCase())),
@@ -23,6 +23,7 @@ export default function Voices() {
         subtitle="Clone your voice from a short sample, design new voices from a description, or use premade ones."
         actions={
           <>
+            <button className="btn ghost" onClick={() => setModal("pack")}>⇪ Import emotion pack</button>
             <button className="btn ghost" onClick={() => setModal("design")}>✦ Design a voice</button>
             <button className="btn primary" onClick={() => setModal("clone")}>+ Clone a voice</button>
           </>
@@ -57,6 +58,7 @@ export default function Voices() {
               </div>
               {v.description && <p className="small muted clamp">{v.description}</p>}
               <div className="row gap wrap">
+                {v.emotions.length > 0 && <span className="tag emo-tag" title={v.emotions.join(", ")}>{v.emotions.length} emotion{v.emotions.length > 1 ? "s" : ""}</span>}
                 {Object.entries(v.labels).map(([k, val]) => (
                   <span key={k} className="tag">{val}</span>
                 ))}
@@ -73,6 +75,7 @@ export default function Voices() {
       )}
       {modal === "clone" && <CloneModal onClose={() => setModal(null)} />}
       {modal === "design" && <DesignModal onClose={() => setModal(null)} />}
+      {modal === "pack" && <PackModal onClose={() => setModal(null)} />}
       {editing && <EditModal voice={editing} onClose={() => setEditing(null)} />}
     </>
   );
@@ -265,14 +268,136 @@ function EditModal({ voice, onClose }: { voice: Voice; onClose: () => void }) {
     }
   };
   return (
-    <Modal title={`Edit ${voice.name}`} onClose={onClose}>
+    <Modal title={`Edit ${voice.name}`} onClose={onClose} wide>
       <div className="field"><label>Name</label><input value={name} onChange={(e) => setName(e.target.value)} /></div>
       <div className="field"><label>Description</label><textarea rows={2} value={desc} onChange={(e) => setDesc(e.target.value)} /></div>
-      <AudioPlayer src={voice.preview_url} title="Reference sample" />
+      <AudioPlayer src={voice.preview_url} title="Normal reference sample" />
+      <EmotionManager voice={voice} />
       <ErrorBox error={error} />
       <div className="row between">
         <button className="btn danger" onClick={remove}>Delete voice</button>
         <button className="btn primary" onClick={save}>Save</button>
+      </div>
+    </Modal>
+  );
+}
+
+
+type EmotionClip = { emotion: string; reference_text: string | null; audio_url: string };
+
+function EmotionManager({ voice }: { voice: Voice }) {
+  const catalog = useEmotionCatalog();
+  const [clips, setClips] = useState<EmotionClip[]>([]);
+  const [emotion, setEmotion] = useState("angry");
+  const [files, setFiles] = useState<File[]>([]);
+  const [text, setText] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [version, setVersion] = useState(0);
+  const load = () => getJSON<{ emotions: EmotionClip[] }>(`/v1/voices/${voice.voice_id}/emotions`).then((r) => setClips(r.emotions)).catch((e) => setError(e.message));
+  useEffect(() => { load(); }, [voice.voice_id]); // eslint-disable-line react-hooks/exhaustive-deps
+  const add = async () => {
+    setBusy(true);
+    setError(null);
+    const f = new FormData();
+    f.append("emotion", emotion);
+    files.forEach((x) => f.append("files", x));
+    if (text.trim()) f.append("reference_text", text.trim());
+    try {
+      await postForm(`/v1/voices/${voice.voice_id}/emotions`, f);
+      setFiles([]);
+      setText("");
+      setVersion((v) => v + 1);
+      load();
+      refreshVoices();
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+  const name = (e: string) => catalog.find((c) => c.emotion === e);
+  return (
+    <div className="stack emotion-manager">
+      <h3>Emotions</h3>
+      <p className="muted small">
+        Give this voice one 5–10 s clip per emotion. Write <code>[angry]</code>, <code>[sad]</code>… in your text and that part is spoken
+        with the matching clip's emotion. Missing emotions fall back to a related one, then to the normal voice.
+      </p>
+      {clips.length === 0 && <div className="muted small">No emotion clips yet.</div>}
+      {clips.map((c) => (
+        <div key={c.emotion} className="emotion-row">
+          <div className="emotion-name">
+            <strong>{name(c.emotion)?.name || c.emotion}</strong> <span className="muted small">{name(c.emotion)?.name_bn}</span>
+            {c.reference_text && <div className="muted small clamp">{c.reference_text}</div>}
+          </div>
+          <AudioPlayer src={`${c.audio_url}?v=${version}`} />
+          <button className="icon-btn" title="Remove" onClick={async () => { await del(`/v1/voices/${voice.voice_id}/emotions/${c.emotion}`); load(); refreshVoices(); }}>🗑</button>
+        </div>
+      ))}
+      <div className="card inset">
+        <div className="row gap wrap">
+          <div className="field">
+            <label>Emotion</label>
+            <select value={emotion} onChange={(e) => setEmotion(e.target.value)}>
+              {catalog.filter((c) => c.emotion !== "neutral").map((c) => (
+                <option key={c.emotion} value={c.emotion}>{c.name} · {c.name_bn}{clips.some((x) => x.emotion === c.emotion) ? " ✓" : ""}</option>
+              ))}
+            </select>
+          </div>
+          <div className="field grow"><label>Exact words in the clip <span className="muted">(optional)</span></label><input value={text} onChange={(e) => setText(e.target.value)} /></div>
+        </div>
+        <FileDrop accept="audio/*,video/*" files={files} onFiles={setFiles} hint="A clip spoken with this emotion" />
+        <div className="row between wrap gap">
+          <Recorder onRecorded={(f) => setFiles([f])} />
+          <button className="btn primary" disabled={!files.length || busy} onClick={add}>{busy ? <Spinner label="Adding" /> : "Add emotion clip"}</button>
+        </div>
+        <ErrorBox error={error} onClose={() => setError(null)} />
+      </div>
+    </div>
+  );
+}
+
+function PackModal({ onClose }: { onClose: () => void }) {
+  const [files, setFiles] = useState<File[]>([]);
+  const [lang, setLang] = useState("bn");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [result, setResult] = useState<{ name: string; base: string; emotions: string[] }[] | null>(null);
+  const submit = async () => {
+    setBusy(true);
+    setError(null);
+    const f = new FormData();
+    f.append("file", files[0]);
+    f.append("language", lang);
+    try {
+      const r = await postForm<{ voices: { name: string; base: string; emotions: string[] }[] }>("/v1/voices/import-pack", f);
+      setResult(r.voices);
+      refreshVoices();
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <Modal title="Import emotion pack" onClose={onClose}>
+      <p className="muted small">
+        A .zip of clips named <code>voice_emotion.mp3</code> (e.g. <code>narrator_calm.mp3</code>, <code>rahima_angry.mp3</code>) and an
+        optional <code>transcripts.txt</code> with one <code>file⇥exact words</code> per line. Each voice is created, or updated if it
+        already exists, with all its emotions.
+      </p>
+      <FileDrop accept=".zip,application/zip" files={files} onFiles={setFiles} hint="voice_emotion_pack.zip" />
+      <div className="field"><label>Language of the clips</label><LanguageSelect value={lang} onChange={setLang} allowAuto /></div>
+      <ErrorBox error={error} />
+      {result && (
+        <div className="notice">
+          {result.map((v) => <div key={v.name}><strong>{v.name}</strong>: normal voice from “{v.base}”, emotions: {v.emotions.join(", ") || "none"}</div>)}
+        </div>
+      )}
+      <div className="row end gap">
+        <button className="btn ghost" onClick={onClose}>{result ? "Done" : "Cancel"}</button>
+        {!result && <button className="btn primary" disabled={!files.length || busy} onClick={submit}>{busy ? <Spinner label="Importing" /> : "Import"}</button>}
       </div>
     </Modal>
   );

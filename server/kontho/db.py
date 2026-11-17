@@ -62,6 +62,15 @@ CREATE TABLE IF NOT EXISTS api_keys (
     created_at REAL NOT NULL,
     last_used_at REAL
 );
+CREATE TABLE IF NOT EXISTS voice_emotions (
+    id TEXT PRIMARY KEY,
+    voice_id TEXT NOT NULL,
+    emotion TEXT NOT NULL,               -- canonical emotion (see emotions.py)
+    ref_audio TEXT NOT NULL,             -- reference clip spoken with that emotion
+    ref_text TEXT,                       -- exact words of the clip
+    created_at REAL NOT NULL,
+    UNIQUE (voice_id, emotion)
+);
 CREATE TABLE IF NOT EXISTS pronunciation (
     id TEXT PRIMARY KEY,
     term TEXT NOT NULL,

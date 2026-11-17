@@ -201,3 +201,12 @@ textarea { resize: vertical; }
   .search { max-width: none; }
   h1 { font-size: 22px; }
 }
+
+/* emotions */
+.emotion-bar { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; padding-bottom: 10px; border-bottom: 1px solid var(--border); }
+.chip.emo { font-size: 12px; padding: 3px 10px; }
+.chip.emo.has { border-color: var(--accent); background: var(--accent-soft); color: var(--accent); }
+.tag.emo-tag { background: var(--accent-soft); color: var(--accent); }
+.emotion-row { display: grid; grid-template-columns: 170px 1fr auto; gap: 10px; align-items: center; border-top: 1px solid var(--border); padding-top: 8px; }
+.card.inset { box-shadow: none; background: var(--panel-2); margin: 0; }
+@media (max-width: 760px) { .emotion-row { grid-template-columns: 1fr auto; } .emotion-row .player { grid-column: 1 / -1; } }

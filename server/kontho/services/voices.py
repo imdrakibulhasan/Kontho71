@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Any
 
@@ -9,6 +10,7 @@ import numpy as np
 
 from .. import audio as A
 from .. import db, storage
+from .. import emotions as E
 from ..engines import get_engine
 from ..engines.base import SynthesisOptions, VoiceSpec
 from ..voice_design import normalize as normalize_instruct
@@ -56,8 +58,9 @@ def seed_premade() -> None:
 
 
 def to_api(v: dict[str, Any]) -> dict[str, Any]:
-    """ElevenLabs-compatible voice object."""
+    """ElevenLabs-compatible voice object (plus Kontho's ``emotions``)."""
     return {
+        "emotions": sorted(list_emotions(v["id"])),
         "voice_id": v["id"],
         "name": v["name"],
         "category": v["category"],
@@ -218,4 +221,112 @@ def delete_voice(voice_id: str) -> bool:
     if not v or v["category"] == "premade":
         return False
     storage.remove_tree(storage.path_for("voices", voice_id, "x").parent)
+    for row in db.query("SELECT id FROM voice_emotions WHERE voice_id = ?", (voice_id,)):
+        db.delete("voice_emotions", row["id"])
     return db.delete("voices", voice_id)
+
+
+# ------------------------------------------------------------------ emotions
+def list_emotions(voice_id: str) -> dict[str, dict[str, Any]]:
+    rows = db.query("SELECT * FROM voice_emotions WHERE voice_id = ? ORDER BY emotion", (voice_id,))
+    return {r["emotion"]: r for r in rows if Path(r["ref_audio"]).exists()}
+
+
+def set_emotion(voice_id: str, emotion: str, files: list[Path], ref_text: str | None = None,
+                remove_noise: bool = False, language: str | None = None) -> dict[str, Any]:
+    """Store (or replace) the reference clip a voice uses for one emotion."""
+    emo = E.canonical(emotion)
+    if not emo:
+        raise ValueError(f"Unknown emotion '{emotion}'. Known: {', '.join(E.EMOTIONS)}")
+    if not get_voice(voice_id):
+        raise KeyError(f"Voice '{voice_id}' not found")
+    dest = storage.path_for("voices", voice_id, "emotions", f"{emo}.wav")
+    prepare_reference(files, dest, remove_noise)
+    if not ref_text:
+        try:
+            ref_text = get_engine("stt").transcribe(dest, language=language or None).text
+        except Exception:
+            ref_text = None
+    old = db.query("SELECT id FROM voice_emotions WHERE voice_id = ? AND emotion = ?", (voice_id, emo))
+    for row in old:
+        db.delete("voice_emotions", row["id"])
+    row = {"id": db.new_id("emo_"), "voice_id": voice_id, "emotion": emo, "ref_audio": str(dest),
+           "ref_text": ref_text, "created_at": db.now()}
+    db.insert("voice_emotions", row)
+    return row
+
+
+def delete_emotion(voice_id: str, emotion: str) -> bool:
+    rows = db.query("SELECT * FROM voice_emotions WHERE voice_id = ? AND emotion = ?",
+                    (voice_id, E.canonical(emotion) or emotion))
+    for r in rows:
+        Path(r["ref_audio"]).unlink(missing_ok=True)
+        db.delete("voice_emotions", r["id"])
+    return bool(rows)
+
+
+def emotion_spec(v: dict[str, Any], emotion: str | None) -> tuple[VoiceSpec, str | None]:
+    """Voice spec for an emotion: its own clip, else a related emotion's clip, else the base voice.
+    Returns (spec, emotion actually used or None)."""
+    base = voice_spec(v)
+    if not emotion or emotion == "neutral":
+        return base, None
+    clips = list_emotions(v["id"])
+    used = E.resolve(emotion, set(clips))
+    if not used:
+        return base, None
+    clip = clips[used]
+    return VoiceSpec(ref_audio=clip["ref_audio"], ref_text=clip["ref_text"], seed=base.seed), used
+
+
+# ------------------------------------------------------------------ emotion packs
+def _read_transcripts(folder: Path) -> dict[str, str]:
+    out: dict[str, str] = {}
+    for tf in folder.rglob("transcripts.txt"):
+        for line in tf.read_text("utf-8").splitlines():
+            m = re.match(r"\s*([^\t:|]+?\.(?:mp3|wav|m4a|ogg|flac|webm))\s*[\t:|]\s*(.+)$", line, re.I)
+            if m:
+                out[Path(m.group(1)).stem.lower()] = re.sub(r"\[[^\]]*\]", " ", m.group(2)).strip()
+    return out
+
+
+def import_pack(folder: Path, language: str = "") -> list[dict[str, Any]]:
+    """Import ``<voice>_<emotion>.<ext>`` clips (+ optional transcripts.txt) as voices with emotions.
+
+    The voice's normal reference is its ``neutral`` clip (else calm, warm, or its longest clip).
+    Voices are matched by name, so re-importing a pack updates them instead of duplicating."""
+    texts = _read_transcripts(folder)
+    groups: dict[str, dict[str, Path]] = {}
+    for f in sorted(folder.rglob("*")):
+        if f.suffix.lower() not in {".mp3", ".wav", ".m4a", ".ogg", ".flac", ".webm"} or "_" not in f.stem:
+            continue
+        who, raw = f.stem.rsplit("_", 1)
+        emo = E.canonical(re.sub(r"\d+$", "", raw))
+        if not emo:
+            continue
+        key = who.strip().lower()
+        prev = groups.setdefault(key, {}).get(emo)
+        if prev is None or A.probe_duration(f) > A.probe_duration(prev):  # keep the longest take
+            groups[key][emo] = f
+    result = []
+    for key, clips in groups.items():
+        name = key.replace("-", " ").replace("_", " ").title()
+        base_emo = next((e for e in ("neutral", "calm", "warm") if e in clips),
+                        max(clips, key=lambda e: A.probe_duration(clips[e])))
+        existing = db.query("SELECT * FROM voices WHERE lower(name) = ? AND category = 'cloned'", (name.lower(),))
+        if existing:
+            voice = existing[0]
+            prepare_reference([clips[base_emo]], Path(voice["ref_audio"]))
+            db.update("voices", voice["id"], {"ref_text": texts.get(clips[base_emo].stem.lower())})
+        else:
+            voice = create_clone(name, [clips[base_emo]], description="Imported emotion pack",
+                                 labels={"source": "emotion pack"}, language=language,
+                                 ref_text=texts.get(clips[base_emo].stem.lower()) or None)
+        for emo, path in clips.items():
+            if emo != "neutral":
+                set_emotion(voice["id"], emo, [path], texts.get(path.stem.lower()) or None, language=language)
+        result.append({"voice_id": voice["id"], "name": name, "base": base_emo,
+                       "emotions": sorted(e for e in clips if e != "neutral")})
+    if not result:
+        raise ValueError("No clips named <voice>_<emotion>.mp3 with a known emotion were found")
+    return result

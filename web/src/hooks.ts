@@ -1,8 +1,17 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { api, Language, Voice } from "./api";
+import { api, EmotionInfo, Language, Voice } from "./api";
 
 let voicesCache: Voice[] | null = null;
 let langCache: Language[] | null = null;
+let emoCache: EmotionInfo[] | null = null;
+
+export function useEmotionCatalog() {
+  const [emos, setEmos] = useState<EmotionInfo[]>(emoCache || []);
+  useEffect(() => {
+    if (!emoCache) api.emotions().then((e) => setEmos((emoCache = e))).catch(() => {});
+  }, []);
+  return emos;
+}
 const listeners = new Set<() => void>();
 
 export function refreshVoices() {
