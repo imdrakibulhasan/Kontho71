@@ -1,0 +1,46 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "kontho"
+version = "0.1.0"
+description = "Open-source, self-hosted voice AI studio: TTS, voice cloning, STT, voice changer, sound effects, voice isolation and dubbing - with an ElevenLabs-compatible API."
+license = { text = "Apache-2.0" }
+requires-python = ">=3.10"
+dependencies = [
+  "fastapi>=0.110",
+  "uvicorn[standard]>=0.29",
+  "python-multipart>=0.0.9",
+  "numpy>=1.24",
+  "soundfile>=0.12",
+  "httpx>=0.27",
+]
+
+[project.optional-dependencies]
+# Text-to-speech, voice cloning and voice design (k2-fsa OmniVoice, Apache-2.0).
+# OmniVoice itself is installed with --no-deps (its training/demo deps are not needed):
+#   pip install --no-deps omnivoice==0.2.1      (scripts/install.sh does this for you)
+tts = ["torch>=2.4", "torchaudio>=2.4", "transformers>=5.10.0", "accelerate", "librosa", "pydub",
+       "audioop-lts; python_version>='3.13'", "huggingface_hub", "safetensors"]
+# Speech-to-text (faster-whisper, MIT)
+stt = ["faster-whisper>=1.0"]
+# Speaker diarization (pyannote, MIT code; gated model weights)
+diarize = ["pyannote.audio>=3.1"]
+# Voice isolation (Demucs, MIT)
+isolation = ["demucs>=4.0"]
+# Sound effects (diffusers: AudioLDM2 / Stable Audio Open)
+sfx = ["torch", "diffusers>=0.30", "transformers", "accelerate", "scipy"]
+# Translation for dubbing (NLLB-200 via transformers)
+translate = ["torch", "transformers", "sentencepiece", "sacremoses"]
+all = ["kontho[tts,stt,isolation,sfx,translate]"]
+dev = ["pytest>=8", "httpx>=0.27"]
+
+[project.scripts]
+kontho = "kontho.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["kontho*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

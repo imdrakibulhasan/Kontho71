@@ -1,0 +1,40 @@
+name: CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  server:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: sudo apt-get update && sudo apt-get install -y ffmpeg
+      - run: pip install -e "server[dev]"
+      - run: cd server && pytest -q
+
+  web:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: cd web && npm ci && npm run build
+
+  docker:
+    runs-on: ubuntu-latest
+    needs: [server, web]
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build --build-arg EXTRAS=stt -t kontho:ci .
+      - run: |
+          docker run -d -p 8000:8000 -e KONTHO_TTS_ENGINE=mock -e KONTHO_STT_ENGINE=mock --name k kontho:ci
+          for i in $(seq 1 30); do curl -sf localhost:8000/health && break; sleep 2; done
+          curl -sf -X POST localhost:8000/v1/text-to-speech/premade_aria -H 'Content-Type: application/json' -d '{"text":"hi"}' -o /tmp/a.mp3
+          test -s /tmp/a.mp3
