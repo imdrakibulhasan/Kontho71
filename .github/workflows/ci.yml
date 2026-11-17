@@ -34,7 +34,9 @@ jobs:
       - uses: actions/checkout@v4
       - run: docker build --build-arg EXTRAS=stt -t kontho:ci .
       - run: |
-          docker run -d -p 8000:8000 -e KONTHO_TTS_ENGINE=mock -e KONTHO_STT_ENGINE=mock --name k kontho:ci
+          docker run -d -p 8000:8000 -e KONTHO_TTS_ENGINE=mock -e KONTHO_STT_ENGINE=mock --name kontho-ci kontho:ci
           for i in $(seq 1 30); do curl -sf localhost:8000/health && break; sleep 2; done
           curl -sf -X POST localhost:8000/v1/text-to-speech/premade_aria -H 'Content-Type: application/json' -d '{"text":"hi"}' -o /tmp/a.mp3
           test -s /tmp/a.mp3
+      - if: failure()
+        run: docker logs kontho-ci || true
